@@ -7,10 +7,12 @@ merges to `main` without human approval.
 
 ## Status
 
-Weekend 2 — agent loop wired. Linear webhook → Postgres queue → worker
-claims → git worktree → Claude Agent SDK session → branch pushed →
-`gh pr create`. Branch protection on the target repo is what enforces
-"no merge to main without approval"; the fleet trusts the server side.
+Weekend 3 — hardened. The agent loop runs unattended with: per-task
+USD/wallclock budgets, a fleet-wide rolling 24h spend cap that pauses
+claims, mandatory Linear webhook signing, graceful SIGTERM drain (only
+*next* claim is blocked; in-flight tasks finish), and failure
+diagnostics that show up in the Linear comment without needing the
+admin CLI.
 
 ## Layout
 
@@ -73,8 +75,14 @@ approval" guarantee. On the target repo:
 ## Operations
 
 ```bash
-pnpm admin list          # current tasks
-pnpm admin show <id>     # task transcript
-pnpm admin cancel <id>
-pnpm admin retry <id>
+pnpm admin list             # recent tasks (status + cost + title)
+pnpm admin list failed      # filter by status
+pnpm admin logs <id>        # pretty event timeline for a task
+pnpm admin show <id>        # raw task row + raw events (JSON)
+pnpm admin stats            # counts by status, 24h spend, last 7 days
+pnpm admin cancel <id>      # mark a task cancelled
+pnpm admin retry <id>       # re-queue a failed/cancelled task
 ```
+
+Send `SIGTERM` to drain (workers stop claiming; in-flight tasks finish).
+`Ctrl-C` twice aborts in-flight work too.

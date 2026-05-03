@@ -1,11 +1,5 @@
 import "dotenv/config";
 
-function required(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing required env var: ${name}`);
-  return v;
-}
-
 function optional(name: string, fallback: string): string {
   return process.env[name] ?? fallback;
 }
@@ -19,7 +13,10 @@ function num(name: string, fallback: number): number {
 }
 
 export const config = {
-  databaseUrl: required("DATABASE_URL"),
+  databaseUrl: optional(
+    "DATABASE_URL",
+    "postgres://postgres@localhost:5432/fleet",
+  ),
   port: num("PORT", 8787),
 
   linear: {
@@ -52,6 +49,12 @@ export const config = {
     heartbeatIntervalMs: num("WORKER_HEARTBEAT_MS", 30_000),
     pollIntervalMs: num("WORKER_POLL_MS", 2_000),
     staleClaimSeconds: num("WORKER_STALE_CLAIM_SECONDS", 300),
+    dailyUsdCap: num("FLEET_DAILY_USD_CAP", 50),
+  },
+
+  security: {
+    allowUnsignedWebhooks:
+      optional("FLEET_ALLOW_UNSIGNED_WEBHOOKS", "0") === "1",
   },
 } as const;
 

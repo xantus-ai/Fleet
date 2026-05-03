@@ -1,6 +1,10 @@
 import { config } from "../config.ts";
 import type { Task } from "../queue/db.ts";
-import type { LinearAdapter, ProgressEvent } from "./adapter.ts";
+import type {
+  FailureDiagnostics,
+  LinearAdapter,
+  ProgressEvent,
+} from "./adapter.ts";
 
 const LINEAR_GRAPHQL = "https://api.linear.app/graphql";
 
@@ -57,6 +61,33 @@ function fmtProgress(e: ProgressEvent): string | null {
   }
 }
 
+export function formatFailure(task: Task, diag: FailureDiagnostics): string {
+  const lines: string[] = [`:x: Fleet run failed: ${diag.error}`, ""];
+
+  if (diag.finalAssistantText) {
+    const quoted = diag.finalAssistantText
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n");
+    lines.push(quoted, "");
+  }
+
+  if (diag.recentToolCalls.length > 0) {
+    lines.push("**Last tool calls:**");
+    for (const c of diag.recentToolCalls) {
+      const mark = c.ok === false ? ":x:" : c.ok === true ? ":white_check_mark:" : "·";
+      const summary = c.summary.length > 0 ? ` ${c.summary}` : "";
+      lines.push(`- ${mark} \`${c.name}\`${summary}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    `Task \`${task.id}\`. Branch \`${task.branchName ?? "—"}\` left for inspection.`,
+  );
+  return lines.join("\n");
+}
+
 export const webhookAdapter: LinearAdapter = {
   async notifyStarted(task) {
     await comment(
@@ -79,10 +110,7 @@ export const webhookAdapter: LinearAdapter = {
       `:white_check_mark: Done. Awaiting review and merge.`,
     );
   },
-  async notifyFailed(task, error) {
-    await comment(
-      task.linearIssueId,
-      `:x: Fleet run failed: ${error}\n\nTask \`${task.id}\`. Branch left in place for inspection.`,
-    );
+  async notifyFailed(task, diag) {
+    await comment(task.linearIssueId, formatFailure(task, diag));
   },
 };

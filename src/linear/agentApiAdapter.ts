@@ -1,5 +1,9 @@
 import type { Task } from "../queue/db.ts";
-import type { LinearAdapter, ProgressEvent } from "./adapter.ts";
+import type {
+  FailureDiagnostics,
+  LinearAdapter,
+  ProgressEvent,
+} from "./adapter.ts";
 
 /**
  * v2 stub. Will be implemented against the Linear Agent API
@@ -21,7 +25,7 @@ export const agentApiAdapter: LinearAdapter = {
   async notifyDone(_task: Task): Promise<void> {
     throw new Error("agentApiAdapter not implemented");
   },
-  async notifyFailed(_task: Task, _error: string): Promise<void> {
+  async notifyFailed(_task: Task, _diag: FailureDiagnostics): Promise<void> {
     throw new Error("agentApiAdapter not implemented");
   },
 };

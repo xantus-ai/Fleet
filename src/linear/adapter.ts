@@ -1,10 +1,15 @@
 import type { Task } from "../queue/db.ts";
+import type { Diagnostics } from "../queue/diagnostics.ts";
 
 export type ProgressEvent =
   | { kind: "thought"; text: string }
   | { kind: "tool_call"; name: string; summary: string }
   | { kind: "tool_result"; name: string; ok: boolean; summary?: string }
   | { kind: "warning"; text: string };
+
+export type FailureDiagnostics = Diagnostics & {
+  error: string;
+};
 
 /**
  * Boundary between the orchestrator and Linear. v1 implementation posts
@@ -16,5 +21,5 @@ export interface LinearAdapter {
   notifyProgress(task: Task, event: ProgressEvent): Promise<void>;
   notifyPrOpened(task: Task, prUrl: string): Promise<void>;
   notifyDone(task: Task): Promise<void>;
-  notifyFailed(task: Task, error: string): Promise<void>;
+  notifyFailed(task: Task, diagnostics: FailureDiagnostics): Promise<void>;
 }

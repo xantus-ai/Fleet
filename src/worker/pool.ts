@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { config } from "../config.ts";
 import { claimNext, heartbeat, markFailed } from "../queue/claim.ts";
+import { checkDailyBudget } from "../queue/budget.ts";
 import type { LinearAdapter } from "../linear/adapter.ts";
 import { runTask } from "./runTask.ts";
 
@@ -8,23 +9,46 @@ type WorkerCtx = {
   workerId: string;
   index: number;
   linear: LinearAdapter;
-  signal: AbortSignal;
+  /** Aborted means: stop *claiming new* tasks. In-flight tasks finish. */
+  drainSignal: AbortSignal;
+  /** Aborted means: cancel even in-flight tasks. Reserved for SIGINT. */
+  killSignal: AbortSignal;
 };
 
 async function runOneWorker(ctx: WorkerCtx): Promise<void> {
   const id = `${ctx.workerId}#${ctx.index}`;
-  while (!ctx.signal.aborted) {
+  let lastBudgetWarn = 0;
+
+  while (!ctx.drainSignal.aborted) {
+    // Daily USD cap gate.
+    try {
+      const b = await checkDailyBudget();
+      if (b.kind === "exceeded") {
+        const now = Date.now();
+        if (now - lastBudgetWarn > 60_000) {
+          console.warn(
+            `[${id}] daily budget exceeded ($${b.spentUsd.toFixed(2)} / $${b.capUsd}); pausing claims`,
+          );
+          lastBudgetWarn = now;
+        }
+        await delay(15_000, undefined, { signal: ctx.drainSignal }).catch(() => {});
+        continue;
+      }
+    } catch (err) {
+      console.error(`[${id}] budget check failed`, err);
+    }
+
     let task;
     try {
       task = await claimNext(id);
     } catch (err) {
       console.error(`[${id}] claim error`, err);
-      await delay(config.worker.pollIntervalMs, undefined, { signal: ctx.signal }).catch(() => {});
+      await delay(config.worker.pollIntervalMs, undefined, { signal: ctx.drainSignal }).catch(() => {});
       continue;
     }
 
     if (!task) {
-      await delay(config.worker.pollIntervalMs, undefined, { signal: ctx.signal }).catch(() => {});
+      await delay(config.worker.pollIntervalMs, undefined, { signal: ctx.drainSignal }).catch(() => {});
       continue;
     }
 
@@ -37,13 +61,14 @@ async function runOneWorker(ctx: WorkerCtx): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`[${id}] task ${task.id} failed:`, msg);
-      // markFailed may already have been called inside runTask; defensive retry is harmless.
       await markFailed(task.id, msg).catch(() => {});
     } finally {
       stop.abort();
       await hb.catch(() => {});
     }
   }
+
+  console.log(`[${id}] drained`);
 }
 
 async function heartbeatLoop(taskId: string, workerId: string, signal: AbortSignal): Promise<void> {
@@ -59,13 +84,22 @@ async function heartbeatLoop(taskId: string, workerId: string, signal: AbortSign
 }
 
 export async function runPool(linear: LinearAdapter): Promise<void> {
-  const ac = new AbortController();
-  const shutdown = (sig: string) => {
-    console.log(`[pool] received ${sig}, shutting down`);
-    ac.abort();
+  const drain = new AbortController();
+  const kill = new AbortController();
+  let sigCount = 0;
+
+  const onSig = (sig: string) => {
+    sigCount += 1;
+    if (sigCount === 1) {
+      console.log(`[pool] received ${sig}; draining (Ctrl-C again to abort in-flight tasks)`);
+      drain.abort();
+    } else {
+      console.log(`[pool] received ${sig} again; aborting in-flight tasks`);
+      kill.abort();
+    }
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => onSig("SIGINT"));
+  process.on("SIGTERM", () => onSig("SIGTERM"));
 
   const n = config.worker.concurrency;
   console.log(`[pool] starting ${n} workers as ${config.worker.id}`);
@@ -75,7 +109,8 @@ export async function runPool(linear: LinearAdapter): Promise<void> {
       workerId: config.worker.id,
       index: i,
       linear,
-      signal: ac.signal,
+      drainSignal: drain.signal,
+      killSignal: kill.signal,
     }),
   );
 

@@ -34,6 +34,7 @@ export type Task = {
   attemptCount: number;
   budgetTokensRemaining: number | null;
   budgetSecondsRemaining: number | null;
+  costUsd: number;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -55,6 +56,7 @@ type TaskRow = {
   attempt_count: number;
   budget_tokens_remaining: string | number | null;
   budget_seconds_remaining: number | null;
+  cost_usd: string | number | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -80,6 +82,7 @@ export function rowToTask(r: TaskRow): Task {
         ? null
         : Number(r.budget_tokens_remaining),
     budgetSecondsRemaining: r.budget_seconds_remaining,
+    costUsd: r.cost_usd == null ? 0 : Number(r.cost_usd),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
   };

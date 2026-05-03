@@ -5,6 +5,8 @@ import {
   markPrOpen,
   markRunning,
 } from "../queue/claim.ts";
+import { recordCost } from "../queue/budget.ts";
+import { buildDiagnostics } from "../queue/diagnostics.ts";
 import { logEvent, type Task } from "../queue/db.ts";
 import type { LinearAdapter } from "../linear/adapter.ts";
 import { runAgent } from "../agent/runner.ts";
@@ -58,6 +60,7 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
       linear,
       signal: wallclock.signal,
     });
+    await recordCost(task.id, agent.costUsd);
 
     if (!agent.ok) {
       throw new TaskFailure(
@@ -97,8 +100,16 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
     const msg = err instanceof Error ? err.message : String(err);
     const leaveBranch = err instanceof TaskFailure ? err.leaveBranch : true;
     await markFailed(task.id, msg);
+
+    const diag = await buildDiagnostics(task.id).catch(() => ({
+      recentToolCalls: [],
+      finalAssistantText: undefined,
+    }));
     await linear
-      .notifyFailed({ ...task, branchName: branch }, msg)
+      .notifyFailed(
+        { ...task, branchName: branch },
+        { ...diag, error: msg },
+      )
       .catch((e) => console.error("[worker] notifyFailed errored", e));
 
     // Failure path: leave the worktree behind for inspection unless we
