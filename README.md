@@ -402,3 +402,20 @@ Not built yet, but the codebase is shaped for these:
   edit would let learnings carry across runs.
 
 See `docs/PROJECT_BRIEF.md` for a denser architecture summary.
+
+## License & dependencies
+
+The orchestrator code in this repository is released under the MIT
+License — see [`LICENSE`](LICENSE).
+
+The fleet depends on the **Claude Agent SDK**
+(`@anthropic-ai/claude-agent-sdk`), which is **not** open source.
+Anthropic publishes it under their own terms — see
+[code.claude.com/docs/en/legal-and-compliance](https://code.claude.com/docs/en/legal-and-compliance).
+You will need your own Anthropic API key to run the fleet, and your
+use of that key (and of the SDK) is governed by Anthropic's
+agreements, not by this repository's MIT license.
+
+Other runtime dependencies (`hono`, `pg`, `dotenv`, etc.) are MIT or
+similarly permissive — see `package.json` and the package metadata in
+`pnpm-lock.yaml` for the full list.
