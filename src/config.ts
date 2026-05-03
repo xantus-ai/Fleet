@@ -30,11 +30,18 @@ export const config = {
 
   github: {
     defaultRepo: optional("GITHUB_DEFAULT_REPO", ""),
-    repoRoot: optional("REPO_ROOT", ""),
+    repoPath: optional("REPO_PATH", ""),
+    defaultBranch: optional("DEFAULT_BRANCH", "main"),
   },
 
   anthropic: {
     apiKey: optional("ANTHROPIC_API_KEY", ""),
+  },
+
+  agent: {
+    model: optional("AGENT_MODEL", "claude-sonnet-4-6"),
+    maxTurns: num("AGENT_MAX_TURNS", 80),
+    maxUsd: num("AGENT_MAX_USD", 5),
   },
 
   worker: {

@@ -7,9 +7,10 @@ merges to `main` without human approval.
 
 ## Status
 
-Weekend 1 — skeleton. The end-to-end loop is wired (webhook → queue →
-worker) but the worker only logs the task it would run; the agent loop
-lands in Weekend 2.
+Weekend 2 — agent loop wired. Linear webhook → Postgres queue → worker
+claims → git worktree → Claude Agent SDK session → branch pushed →
+`gh pr create`. Branch protection on the target repo is what enforces
+"no merge to main without approval"; the fleet trusts the server side.
 
 ## Layout
 
@@ -38,8 +39,36 @@ pnpm serve   # webhook receiver on :8787
 pnpm worker  # in a second terminal
 ```
 
+The target repo must be cloned to `REPO_PATH` (e.g.
+`~/fleet-repos/myrepo`). Worktrees are placed in
+`~/fleet-repos/myrepo-worktrees/<task-id>`. The user running the worker
+must have an authenticated `gh` (`gh auth status`) and SSH/HTTPS push
+credentials for the repo.
+
 Point a Linear webhook at `http://<host>:8787/linear/webhook`. Apply the
 `agent-ready` label to an issue and the worker will pick it up.
+
+## GitHub side: branch protection (do this once per repo)
+
+The fleet relies entirely on GitHub for the "no merge to main without
+approval" guarantee. On the target repo:
+
+1. **Branch ruleset** on `main`:
+   - Require a pull request before merging
+   - Require 1 approving review
+   - **Dismiss stale approvals on push** (so the agent can't sneak
+     commits past your approval)
+   - Require status checks to pass: lint, typecheck, test, build —
+     whatever the repo has
+   - Require linear history (optional, but cleaner)
+2. **CODEOWNERS** at `.github/CODEOWNERS` listing yourself as the owner
+   of `.github/**` and other sensitive paths so the agent's edits there
+   require your review by definition.
+3. **Auto-merge** enabled at the repo level so once you approve and
+   checks pass, GitHub merges without you clicking again.
+4. **Dedicated GitHub App or machine user** for agent commits: gives
+   the fleet a clear identity in `git log` and lets you scope it down.
+   Auth `gh` on the worker box as that identity.
 
 ## Operations
 
