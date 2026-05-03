@@ -19,6 +19,7 @@ import {
 } from "../worktree/manager.ts";
 import { resolveRepo } from "../repos/registry.ts";
 import { createPullRequest, findOpenPrForBranch } from "../github/pr.ts";
+import { createTaskRecords, readOverview } from "../taskRecords/manager.ts";
 
 class TaskFailure extends Error {
   constructor(
@@ -49,6 +50,9 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
 
   let worktreeDir: string | null = null;
   try {
+    const records = await createTaskRecords({ repo, branch, task });
+    await logEvent(task.id, "task_records_created", { dir: records.dir });
+
     const wt = await createWorktree({ repo, taskId: task.id, branch });
     worktreeDir = wt.dir;
     await logEvent(task.id, "worktree_created", { dir: wt.dir, branch });
@@ -57,6 +61,7 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
       task,
       worktreeDir: wt.dir,
       branch,
+      records,
       linear,
       signal: wallclock.signal,
     });
@@ -80,9 +85,20 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
       );
     }
 
+    const overview = await readOverview(records);
+    if (!overview) {
+      throw new TaskFailure(
+        "agent did not write overview.md (PR annotation is required)",
+        true,
+      );
+    }
+    await logEvent(task.id, "overview_captured", {
+      length: overview.length,
+    });
+
     let prUrl = await findOpenPrForBranch(repo, branch);
     if (!prUrl) {
-      prUrl = await createPullRequest({ repo, task, branch });
+      prUrl = await createPullRequest({ repo, task, branch, overview });
     }
 
     await markPrOpen(task.id, prUrl, branch);

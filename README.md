@@ -57,6 +57,13 @@ Linear ─webhook──▶ Receiver ─enqueue──▶ Postgres (job queue)
    inspection and a structured diagnostic comment is posted to Linear
    with the agent's last assistant message and last few tool calls.
 
+Throughout the run the agent maintains three audit files in a
+per-project directory **outside the worktree** (so they can never be
+committed): `plan.md` written before work starts, `progress.md`
+ticked off as the agent goes, and `overview.md` written at the end.
+The fleet refuses to open a PR if `overview.md` is left as the
+template — that's how "all PRs are annotated" is enforced.
+
 ## Prerequisites
 
 - **macOS or Linux** (the worker is a long-running local process; this
@@ -132,9 +139,14 @@ to work on.
    the worker machine. This gives the fleet a clear identity in
    `git log` and lets you scope permissions narrowly.
 5. **Local clone** at `REPO_PATH` (e.g. `~/fleet-repos/myrepo`).
-   Worktrees go in a sibling dir
-   (`~/fleet-repos/myrepo-worktrees/<task-id>`) — keep that path
-   writable.
+   The fleet creates two sibling directories next to it:
+   - `~/fleet-repos/myrepo-worktrees/<task-id>/` — per-task git
+     worktree, torn down on success
+   - `~/fleet-repos/myrepo-fleet/<branch>/` — per-task audit
+     directory holding `plan.md`, `progress.md`, `overview.md`;
+     **kept indefinitely** for auditing
+   Both paths must be writable. Neither is in the repo, so they
+   cannot be committed.
 
 ## Setting up Linear
 
@@ -198,6 +210,20 @@ When a task fails, the Linear comment includes:
 - The task ID and the branch left behind for inspection
 
 That's usually enough to triage without opening the admin CLI.
+
+### Auditing past runs
+
+Every task gets a directory at
+`<REPO_PATH>-fleet/<branch>/` containing:
+
+- `plan.md` — the plan the agent wrote before starting
+- `progress.md` — the checklist as the agent ticked it off
+- `overview.md` — the non-technical summary that was used as the
+  PR description
+
+These persist after the task completes (the worktree is removed; the
+audit dir is not). Browse them with any editor; they're plain
+markdown.
 
 ## Configuration reference
 
@@ -288,6 +314,14 @@ The agent committed but didn't push (or auth failed during push).
 Check that `gh auth status` works and that the active GitHub identity
 has push rights to the repo.
 
+**Task ends in `failed` with "agent did not write overview.md".**
+The agent left `overview.md` as the unmodified template (or wrote
+something under 20 characters / containing the literal placeholder
+text). The fleet refuses to open a PR without an overview to put in
+the body. Check the agent's transcript with `pnpm admin logs <id>`;
+the overview file is at `<REPO_PATH>-fleet/<branch>/overview.md`
+if you want to fill it in manually before retrying.
+
 **`gh pr create` fails with "no commits between main and ...".**
 The agent committed something git considered identical to `main` (e.g.
 re-applied an existing patch). The runTask check
@@ -333,8 +367,10 @@ src/
     runner.ts                # Claude Agent SDK invocation
     systemPrompt.ts          # fleet rules + repo CLAUDE.md loader
     bashAllowlist.ts         # canUseTool defense
+  taskRecords/
+    manager.ts               # plan/progress/overview templates + read
   github/
-    pr.ts                    # gh pr create wrapper
+    pr.ts                    # gh pr create wrapper (annotates body w/ overview)
   linear/
     adapter.ts               # interface
     webhookAdapter.ts        # v1: GraphQL commentCreate

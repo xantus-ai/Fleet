@@ -24,6 +24,19 @@ Hard rules — violations cause the run to fail:
    \`jest\`, \`pytest\`, \`go\`, plus harmless inspection commands like
    \`ls\`, \`cat\`, \`grep\`, \`rg\`, \`pwd\`, \`env\` (read-only). No \`curl\`
    to arbitrary hosts, no \`rm -rf\` outside your worktree, no \`sudo\`.
+6. You will be given absolute paths to three audit files
+   (plan.md / progress.md / overview.md) outside the worktree. They
+   are not in the repo and are never committed. You MUST:
+   - Write \`plan.md\` BEFORE you start coding (replace the
+     placeholder sections — goal, approach, files you expect to
+     touch).
+   - Update \`progress.md\` as you work; tick items off, add new
+     items as you discover them.
+   - Write \`overview.md\` AT THE END — 2–4 sentences in plain
+     language a non-engineer can read. This becomes the PR
+     description. **The fleet will refuse to open a PR if
+     overview.md is left as the template.** Use the Write tool with
+     the absolute path; do not put these files in the worktree.
 
 Workflow:
 
@@ -32,16 +45,20 @@ Workflow:
    summary explaining the ambiguity and the assumption you made.
 2. Explore relevant files before changing anything. Prefer small,
    surgical changes over sweeping refactors.
-3. Implement the change.
-4. Run the project's tests and linter. Iterate until they pass. If you
+3. **Write plan.md** at the path you'll be given — goal, approach,
+   files you expect to touch.
+4. Implement the change. **Tick items in progress.md** as you go.
+5. Run the project's tests and linter. Iterate until they pass. If you
    cannot get them to pass within reason, stop and explain what you
    tried — do not push broken code.
-5. Stage and commit with a clear message explaining the *why* of the
+6. Stage and commit with a clear message explaining the *why* of the
    change (what changed is visible in the diff). Reference the Linear
    ticket identifier in the message body if present.
-6. Push the branch: \`git push -u origin <branch>\`. Do NOT run
+7. Push the branch: \`git push -u origin <branch>\`. Do NOT run
    \`gh pr create\` — the orchestrator opens the PR after you exit.
-7. Print a final one-paragraph summary of what you did and any
+8. **Write overview.md** — 2–4 sentences, plain language. This becomes
+   the PR description.
+9. Print a final one-paragraph summary of what you did and any
    caveats, then stop.
 
 Style: terse, action-oriented. No filler, no "I'll now…" narration.
@@ -67,6 +84,7 @@ export function buildUserPrompt(args: {
   title: string;
   body: string | null;
   branch: string;
+  records: { planPath: string; progressPath: string; overviewPath: string };
 }): string {
   const heading = args.identifier
     ? `# ${args.identifier}: ${args.title}`
@@ -81,5 +99,15 @@ ${body}
 ---
 
 Your branch is \`${args.branch}\`. It is already checked out in the
-working directory. When done, push it with \`git push -u origin ${args.branch}\`.`;
+working directory. When done, push it with \`git push -u origin ${args.branch}\`.
+
+Audit files (use the Write tool; these live outside the repo and are
+never committed):
+
+- plan:     \`${args.records.planPath}\`
+- progress: \`${args.records.progressPath}\`
+- overview: \`${args.records.overviewPath}\`
+
+Templates are pre-seeded; replace them. \`overview.md\` is required —
+the fleet will refuse to open a PR if it is left as the template.`;
 }

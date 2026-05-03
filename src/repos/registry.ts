@@ -8,6 +8,12 @@ export type RepoConfig = {
   defaultBranch: string;
   workdir: string;
   worktreeRoot: string;
+  /**
+   * Where per-task audit files (plan.md / progress.md / overview.md)
+   * live. Outside the worktree so the agent cannot accidentally commit
+   * them. Layout: <taskRecordsRoot>/<branch-name>/{plan,progress,overview}.md.
+   */
+  taskRecordsRoot: string;
 };
 
 function deriveSlug(githubFullName: string): string {
@@ -20,11 +26,16 @@ function deriveWorktreeRoot(workdir: string): string {
   return join(dirname(workdir), `${basename(workdir)}-worktrees`);
 }
 
+function deriveTaskRecordsRoot(workdir: string): string {
+  return join(dirname(workdir), `${basename(workdir)}-fleet`);
+}
+
 export async function ensureDefaultRepo(): Promise<RepoConfig | null> {
   if (!config.github.defaultRepo || !config.github.repoPath) return null;
 
   const slug = deriveSlug(config.github.defaultRepo);
   const worktreeRoot = deriveWorktreeRoot(config.github.repoPath);
+  const taskRecordsRoot = deriveTaskRecordsRoot(config.github.repoPath);
 
   await pool.query(
     `insert into repos (slug, github_full_name, default_branch, workdir, config)
@@ -39,7 +50,7 @@ export async function ensureDefaultRepo(): Promise<RepoConfig | null> {
       config.github.defaultRepo,
       config.github.defaultBranch,
       config.github.repoPath,
-      JSON.stringify({ worktreeRoot }),
+      JSON.stringify({ worktreeRoot, taskRecordsRoot }),
     ],
   );
 
@@ -49,6 +60,7 @@ export async function ensureDefaultRepo(): Promise<RepoConfig | null> {
     defaultBranch: config.github.defaultBranch,
     workdir: config.github.repoPath,
     worktreeRoot,
+    taskRecordsRoot,
   };
 }
 
@@ -59,13 +71,18 @@ export async function getRepo(slug: string): Promise<RepoConfig | null> {
   );
   if (rows.length === 0) return null;
   const r = rows[0];
-  const cfg = (r.config ?? {}) as { worktreeRoot?: string };
+  const cfg = (r.config ?? {}) as {
+    worktreeRoot?: string;
+    taskRecordsRoot?: string;
+  };
   return {
     slug: r.slug,
     githubFullName: r.github_full_name,
     defaultBranch: r.default_branch,
     workdir: r.workdir,
     worktreeRoot: cfg.worktreeRoot ?? deriveWorktreeRoot(r.workdir),
+    taskRecordsRoot:
+      cfg.taskRecordsRoot ?? deriveTaskRecordsRoot(r.workdir),
   };
 }
 

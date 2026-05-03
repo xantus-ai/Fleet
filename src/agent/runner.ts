@@ -2,6 +2,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.ts";
 import { logEvent, type Task } from "../queue/db.ts";
 import type { LinearAdapter } from "../linear/adapter.ts";
+import type { TaskRecords } from "../taskRecords/manager.ts";
 import { inspectBashCommand } from "./bashAllowlist.ts";
 import { buildSystemPrompt, buildUserPrompt } from "./systemPrompt.ts";
 
@@ -38,10 +39,11 @@ export async function runAgent(args: {
   task: Task;
   worktreeDir: string;
   branch: string;
+  records: TaskRecords;
   linear: LinearAdapter;
   signal: AbortSignal;
 }): Promise<AgentResult> {
-  const { task, worktreeDir, branch, linear, signal } = args;
+  const { task, worktreeDir, branch, records, linear, signal } = args;
 
   const systemPrompt = await buildSystemPrompt(worktreeDir);
   const userPrompt = buildUserPrompt({
@@ -49,6 +51,11 @@ export async function runAgent(args: {
     title: task.title,
     body: task.body,
     branch,
+    records: {
+      planPath: records.planPath,
+      progressPath: records.progressPath,
+      overviewPath: records.overviewPath,
+    },
   });
 
   await logEvent(task.id, "agent_message", {
@@ -72,6 +79,7 @@ export async function runAgent(args: {
       prompt: userPrompt,
       options: {
         cwd: worktreeDir,
+        additionalDirectories: [records.dir],
         model: config.agent.model,
         systemPrompt,
         tools: ENABLED_TOOLS,

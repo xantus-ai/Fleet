@@ -80,23 +80,33 @@ Step-by-step (file:function references):
    `src/worker/runTask.ts:runTask`:
    - `markRunning`
    - `linear.notifyStarted`
+   - `createTaskRecords` — pre-seeds the per-branch audit dir with
+     `plan.md` / `progress.md` / `overview.md` templates (outside
+     the worktree, never committed)
    - `createWorktree` from `origin/main`, branch
      `agent/<linear-id>-<slug>`
    - `runAgent` with a wallclock-bounded `AbortController`
    - `recordCost`
    - `hasNewCommits` and `branchPushed` sanity checks
-   - `createPullRequest` (or `findOpenPrForBranch` if the agent
-     somehow opened it — fallback path)
+   - `readOverview` — returns null if `overview.md` is still the
+     template, which fails the task (the gate that enforces "all
+     PRs annotated")
+   - `createPullRequest` with the overview embedded as the
+     `## Overview` section in the PR body
    - `markPrOpen`, `linear.notifyPrOpened`, `markDone`,
      `linear.notifyDone`
-   - `removeWorktree` on success; left in place on failure
+   - `removeWorktree` on success; the audit dir is **kept** for
+     review
 5. **Agent runs in the worktree.** `src/agent/runner.ts:runAgent`
    calls `query()` from the Claude Agent SDK with:
    - `cwd = worktreeDir`
+   - `additionalDirectories: [records.dir]` so the agent can write
+     audit files outside the worktree
    - System prompt: `buildSystemPrompt` (fleet rules + repo
-     `CLAUDE.md` if present)
+     `CLAUDE.md` if present, including the audit-file workflow)
    - User prompt: `buildUserPrompt` (Linear title/body, branch name,
-     instructions to push but not open PR)
+     instructions to push but not open PR, **absolute paths to the
+     three audit files**)
    - `tools = ENABLED_TOOLS` (`Read`, `Edit`, `Write`, `Bash`,
      `Grep`, `Glob`)
    - `permissionMode = 'bypassPermissions'` +
@@ -144,7 +154,32 @@ transcript and the source of failure diagnostics. Types observed:
 `ensureDefaultRepo()`, but designed to be edited directly when
 multi-repo lands.
 - `slug` (PK), `github_full_name`, `default_branch`, `workdir`,
-  `config jsonb` (currently holds `worktreeRoot`)
+  `config jsonb` (holds `worktreeRoot` and `taskRecordsRoot` —
+  derived from `workdir` if absent)
+
+## Filesystem layout (outside the repo)
+
+For a target repo cloned at `~/fleet-repos/myrepo`, the fleet uses
+two siblings:
+
+```
+~/fleet-repos/
+  myrepo/                                   # the actual git checkout
+  myrepo-worktrees/                         # per-task worktrees (ephemeral)
+    <task-id>/                              #   removed on success
+  myrepo-fleet/                             # per-task audit (kept indefinitely)
+    agent/                                  #   nested by branch namespace
+      eng-42-add-version-flag/
+        plan.md                             #     written before coding
+        progress.md                         #     ticked off during
+        overview.md                         #     non-technical PR summary
+```
+
+Both sibling dirs are derived from `RepoConfig.workdir` by
+`src/repos/registry.ts`. Neither is inside the worktree, so the agent
+cannot commit them by mistake. The agent writes to them via the SDK's
+`Write` tool with absolute paths, granted by
+`additionalDirectories: [records.dir]` in `runAgent`'s options.
 
 ## Safety mechanisms — where each lives
 
@@ -159,6 +194,8 @@ multi-repo lands.
 | Daily fleet USD cap | `src/queue/budget.ts:checkDailyBudget` | Checked before each claim in `src/worker/pool.ts` |
 | Stale-claim recovery | `src/queue/claim.ts:claimNext` | Heartbeat-based; threshold from `WORKER_STALE_CLAIM_SECONDS` |
 | Worktree isolation | `src/worktree/manager.ts:createWorktree` | Cleans up any prior worktree at the path before creating |
+| Audit files outside worktree | `src/taskRecords/manager.ts` | Records dir is a sibling of the worktree, never inside the repo |
+| PR annotation gate | `src/worker/runTask.ts` (`readOverview` check) | Task fails if `overview.md` is still the template — enforces "all PRs annotated" |
 | Two-stage SIGTERM drain | `src/worker/pool.ts:runPool` | First signal stops claiming; second aborts in-flight |
 | Branch protection (the real one) | GitHub | Configured per-repo, not in this codebase |
 

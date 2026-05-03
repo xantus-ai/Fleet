@@ -5,19 +5,30 @@ import type { Task } from "../queue/db.ts";
 
 const execFileP = promisify(execFile);
 
-function buildPrBody(task: Task): string {
+export function buildPrBody(task: Task, overview?: string): string {
   const ref = task.linearIssueIdentifier ?? task.linearIssueId;
-  return [
-    `Implements ${ref}.`,
-    "",
-    task.body?.trim() ? `> ${task.body.trim().split("\n").join("\n> ")}` : "",
-    "",
-    "---",
-    "",
+  const lines: string[] = [`Implements ${ref}.`, ""];
+
+  if (overview && overview.trim()) {
+    lines.push("## Overview", "", overview.trim(), "");
+  }
+
+  if (task.body && task.body.trim()) {
+    lines.push("## Original ticket", "");
+    const quoted = task.body
+      .trim()
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n");
+    lines.push(quoted, "");
+  }
+
+  lines.push("---", "");
+  lines.push(
     `_Opened by the fleet on behalf of Linear ticket \`${ref}\` (task \`${task.id}\`)._`,
-  ]
-    .filter((s) => s !== undefined)
-    .join("\n");
+  );
+
+  return lines.join("\n");
 }
 
 function buildPrTitle(task: Task): string {
@@ -35,10 +46,11 @@ export async function createPullRequest(args: {
   repo: RepoConfig;
   task: Task;
   branch: string;
+  overview?: string;
 }): Promise<string> {
-  const { repo, task, branch } = args;
+  const { repo, task, branch, overview } = args;
   const title = buildPrTitle(task);
-  const body = buildPrBody(task);
+  const body = buildPrBody(task, overview);
 
   const { stdout } = await execFileP(
     "gh",
