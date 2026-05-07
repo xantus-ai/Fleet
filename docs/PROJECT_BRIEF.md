@@ -31,9 +31,13 @@ Goals (in priority order):
 4. **Single repo for v1, but shaped for multi-repo from day 1.** No
    second-system rewrite when the second repo lands.
 
-Non-goals for now: PR review iteration, cross-task memory, multi-repo
-trigger routing, native Linear Agent API integration. Each has a
-clearly identified extension point — see "Extension points" below.
+Non-goals for now: PR review iteration, cross-task **write-side**
+memory (a `fleet_memory` table the agent edits during a run),
+multi-repo trigger routing, native Linear Agent API integration. Each
+has a clearly identified extension point — see "Extension points"
+below. Read-side cross-task context (merged blockers' title, body, PR
+URL, and `overview.md` injected into the dependent task's prompt) **is**
+built; see `docs/cross-task-context.md`.
 
 ## Architecture decisions
 
@@ -150,9 +154,10 @@ transcript and the source of failure diagnostics. Types observed:
 `tool_result`, `tool_call_denied`, `agent_message` (with `kind:
 'user_prompt' | 'text'`), `agent_result`, `agent_error`.
 
-**`repos`** — repo registry. Seeded from env on the first migrate via
-`ensureDefaultRepo()`, but designed to be edited directly when
-multi-repo lands.
+**`repos`** — repo registry. Seeded from env on every `pnpm serve` /
+`pnpm worker` startup via `ensureDefaultRepo()` (idempotent upsert),
+not by `migrate`. Designed to be edited directly when multi-repo
+lands.
 - `slug` (PK), `github_full_name`, `default_branch`, `workdir`,
   `config jsonb` (holds `worktreeRoot` and `taskRecordsRoot` —
   derived from `workdir` if absent)
@@ -220,9 +225,14 @@ When the next thing lands, here's where it goes.
   the task in `pending` with the review thread appended to the user
   prompt. The agent runner is already idempotent on rerun (worktree
   manager handles cleanup of prior attempts).
-- **Cross-task memory** — could add a `fleet_memory` table the agent
-  edits via a custom MCP tool, or a per-repo memory file the system
-  prompt loader reads.
+- **Cross-task write-side memory** — read-side merged-blocker context
+  is already built (see `src/queue/dependencies.ts:getBlockerContext`
+  and `docs/cross-task-context.md`). What's *not* built is a
+  `fleet_memory` table the agent can write to during a run. That would
+  let it carry forward observations the ticket bodies don't capture
+  (e.g. "the test runner here has a flaky DNS step, retry once"). Add
+  via a custom MCP tool wired in `src/agent/runner.ts` and a new
+  table; expose at prompt build time alongside blocker context.
 - **Per-repo overrides** — `repos.config jsonb` is the place. Today
   it only stores `worktreeRoot`; add fields like `testCommand`,
   `lintCommand`, model overrides, and have `runAgent` read them.
@@ -232,7 +242,7 @@ When the next thing lands, here's where it goes.
 - The Linear Agent API adapter — only a stub
 - Multi-repo trigger routing
 - PR review iteration
-- Cross-task memory
+- Cross-task write-side memory (read-side blocker context is built)
 - A web admin UI (CLI is sufficient for solo operation)
 - Process supervisor config (`pm2`/`launchd`/`systemd` is documented
   in the README but not provided)

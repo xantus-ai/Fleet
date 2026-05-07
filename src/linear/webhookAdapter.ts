@@ -17,6 +17,25 @@ const COMMENT_CREATE = `
   }
 `;
 
+const ISSUE_TEAM_STATES = `
+  query IssueTeamStates($id: String!) {
+    issue(id: $id) {
+      team {
+        id
+        states { nodes { id name type } }
+      }
+    }
+  }
+`;
+
+const ISSUE_UPDATE_STATE = `
+  mutation IssueUpdateState($id: String!, $stateId: String!) {
+    issueUpdate(id: $id, input: { stateId: $stateId }) {
+      success
+    }
+  }
+`;
+
 async function gql<T>(
   query: string,
   variables: Record<string, unknown>,
@@ -48,6 +67,59 @@ async function comment(issueId: string, body: string): Promise<void> {
     return;
   }
   await gql(COMMENT_CREATE, { issueId, body });
+}
+
+type IssueTeamStatesResp = {
+  issue: {
+    team: {
+      id: string;
+      states: { nodes: Array<{ id: string; name: string; type: string }> };
+    } | null;
+  } | null;
+};
+
+const issueToTeam = new Map<string, string>();
+const teamStates = new Map<string, Map<string, string>>();
+
+async function loadStatesForIssue(issueId: string): Promise<Map<string, string> | null> {
+  const cachedTeamId = issueToTeam.get(issueId);
+  if (cachedTeamId) {
+    const cached = teamStates.get(cachedTeamId);
+    if (cached) return cached;
+  }
+  const data = await gql<IssueTeamStatesResp>(ISSUE_TEAM_STATES, { id: issueId });
+  const team = data.issue?.team;
+  if (!team) return null;
+  const map = new Map<string, string>();
+  for (const s of team.states.nodes) map.set(s.name.toLowerCase(), s.id);
+  issueToTeam.set(issueId, team.id);
+  teamStates.set(team.id, map);
+  return map;
+}
+
+async function setIssueState(issueId: string, stateName: string): Promise<void> {
+  if (!stateName) return;
+  if (!config.linear.apiKey) {
+    console.log(`[linear:dryrun] ${issueId} → state "${stateName}"`);
+    return;
+  }
+  try {
+    const states = await loadStatesForIssue(issueId);
+    if (!states) {
+      console.warn(`[linear] no team found for issue ${issueId}; skipping state change`);
+      return;
+    }
+    const stateId = states.get(stateName.toLowerCase());
+    if (!stateId) {
+      console.warn(
+        `[linear] state "${stateName}" not found on issue ${issueId}'s team; skipping`,
+      );
+      return;
+    }
+    await gql(ISSUE_UPDATE_STATE, { id: issueId, stateId });
+  } catch (e) {
+    console.warn(`[linear] failed to set state "${stateName}" on ${issueId}: ${e}`);
+  }
 }
 
 function fmtProgress(e: ProgressEvent): string | null {
@@ -96,6 +168,7 @@ export const webhookAdapter: LinearAdapter = {
         task.branchName ?? "agent/" + (task.linearIssueIdentifier ?? task.id.slice(0, 8))
       }\`.`,
     );
+    await setIssueState(task.linearIssueId, config.linear.stateInProgress);
   },
   async notifyProgress(task, event) {
     const text = fmtProgress(event);
@@ -103,6 +176,7 @@ export const webhookAdapter: LinearAdapter = {
   },
   async notifyPrOpened(task, prUrl) {
     await comment(task.linearIssueId, `PR opened: ${prUrl}`);
+    await setIssueState(task.linearIssueId, config.linear.stateInReview);
   },
   async notifyDone(task) {
     await comment(

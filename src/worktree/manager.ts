@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, rm, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { dirname, join, relative } from "node:path";
+import { platform } from "node:os";
+import { config } from "../config.ts";
 import type { RepoConfig } from "../repos/registry.ts";
 
 const execFileP = promisify(execFile);
@@ -42,6 +44,61 @@ async function exists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Recursively find every node_modules directory in a tree, capped at
+ * a depth of 4 (handles top-level + a couple of nesting levels for
+ * monorepos like cloud's frontend/backend/packages layout). Skips
+ * descending *into* node_modules — nested deps are part of the
+ * top-level dir we're about to clone.
+ */
+async function findNodeModulesDirs(root: string): Promise<string[]> {
+  const found: string[] = [];
+  const SKIP = new Set([".git", "dist", "build", ".next", ".turbo"]);
+  async function walk(dir: string, depth: number): Promise<void> {
+    if (depth > 4) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === "node_modules") {
+        found.push(join(dir, "node_modules"));
+        continue; // don't descend
+      }
+      if (e.name.startsWith(".") || SKIP.has(e.name)) continue;
+      await walk(join(dir, e.name), depth + 1);
+    }
+  }
+  await walk(root, 0);
+  return found;
+}
+
+/**
+ * CoW-clone every node_modules dir from `srcRepo` into `dstWorktree`
+ * preserving relative paths. Uses APFS clonefile on macOS and
+ * Btrfs/XFS reflink on Linux; both fall back to a regular copy on
+ * unsupported filesystems.
+ */
+async function shareNodeModules(srcRepo: string, dstWorktree: string): Promise<number> {
+  const dirs = await findNodeModulesDirs(srcRepo);
+  if (dirs.length === 0) return 0;
+
+  const isMac = platform() === "darwin";
+  for (const src of dirs) {
+    const rel = relative(srcRepo, src);
+    const dst = join(dstWorktree, rel);
+    await mkdir(dirname(dst), { recursive: true });
+    const args = isMac
+      ? ["-cR", src, dst]
+      : ["-R", "--reflink=auto", src, dst];
+    await execFileP("cp", args, { maxBuffer: 4 * 1024 * 1024 });
+  }
+  return dirs.length;
 }
 
 /**
@@ -91,6 +148,32 @@ export async function createWorktree(args: {
     dir,
     `origin/${repo.defaultBranch}`,
   );
+
+  // CoW-clone node_modules so the agent doesn't need to run a cold
+  // `npm install` before it can run typecheck/lint. Failure is
+  // non-fatal — agent can install itself if needed.
+  if (config.worker.shareNodeModules) {
+    try {
+      const n = await shareNodeModules(repo.workdir, dir);
+      if (n > 0) console.log(`[worktree] cloned ${n} node_modules dir(s) into ${dir}`);
+    } catch (err) {
+      console.warn(`[worktree] node_modules share failed (continuing): ${err}`);
+    }
+  }
+
+  // Scope the bot identity to this worktree only. Per-worktree config
+  // beats per-repo and global, so the operator's normal identity
+  // continues to apply outside the worktree (e.g. when they manually
+  // commit on the cloud main checkout).
+  if (config.bot.gitName && config.bot.gitEmail) {
+    await git(dir, "config", "user.name", config.bot.gitName);
+    await git(dir, "config", "user.email", config.bot.gitEmail);
+    // The bot has no signing key on this machine. If the operator has
+    // commit signing enabled globally, the agent's commits would fail
+    // without this. Per-worktree, so it doesn't disable signing
+    // anywhere else.
+    await git(dir, "config", "commit.gpgsign", "false");
+  }
 
   return { dir, branch };
 }

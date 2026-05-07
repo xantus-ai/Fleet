@@ -1,5 +1,6 @@
 import { serve } from "@hono/node-server";
 import { config } from "../config.ts";
+import { ensureDefaultRepo } from "../repos/registry.ts";
 import { buildApp } from "../webhook/server.ts";
 
 if (!config.linear.webhookSecret && !config.security.allowUnsignedWebhooks) {
@@ -14,6 +15,17 @@ if (!config.linear.webhookSecret && !config.security.allowUnsignedWebhooks) {
 if (!config.linear.webhookSecret) {
   console.warn(
     "[serve] FLEET_ALLOW_UNSIGNED_WEBHOOKS=1 — running without signature verification (do not use in production)",
+  );
+}
+
+// Idempotent — upserts the default repo row from env on every startup.
+// Without this, enqueue would FK-fail because repos is empty.
+const repo = await ensureDefaultRepo();
+if (repo) {
+  console.log(`[serve] default repo: ${repo.slug} (${repo.githubFullName})`);
+} else {
+  console.warn(
+    "[serve] no default repo configured (set GITHUB_DEFAULT_REPO + REPO_PATH)",
   );
 }
 

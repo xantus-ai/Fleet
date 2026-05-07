@@ -1,6 +1,10 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  query,
+  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+} from "@anthropic-ai/claude-agent-sdk";
 import { config } from "../config.ts";
 import { logEvent, type Task } from "../queue/db.ts";
+import type { BlockerContext } from "../queue/dependencies.ts";
 import type { LinearAdapter } from "../linear/adapter.ts";
 import type { TaskRecords } from "../taskRecords/manager.ts";
 import { inspectBashCommand } from "./bashAllowlist.ts";
@@ -42,8 +46,9 @@ export async function runAgent(args: {
   records: TaskRecords;
   linear: LinearAdapter;
   signal: AbortSignal;
+  blockers: BlockerContext[];
 }): Promise<AgentResult> {
-  const { task, worktreeDir, branch, records, linear, signal } = args;
+  const { task, worktreeDir, branch, records, linear, signal, blockers } = args;
 
   const systemPrompt = await buildSystemPrompt(worktreeDir);
   const userPrompt = buildUserPrompt({
@@ -56,6 +61,7 @@ export async function runAgent(args: {
       progressPath: records.progressPath,
       overviewPath: records.overviewPath,
     },
+    blockers,
   });
 
   await logEvent(task.id, "agent_message", {
@@ -81,7 +87,14 @@ export async function runAgent(args: {
         cwd: worktreeDir,
         additionalDirectories: [records.dir],
         model: config.agent.model,
-        systemPrompt,
+        // Pass the system prompt as [content, BOUNDARY] so the entire
+        // fleet-rules + target-repo CLAUDE.md prefix is cacheable. The
+        // SDK then sends a cache_control marker, which lets every turn
+        // after the first hit Anthropic's prompt cache (~10% of full
+        // input price). Subsequent tasks against the same target repo
+        // also hit the cache as long as they start within the cache
+        // TTL of a previous task.
+        systemPrompt: [systemPrompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY],
         tools: ENABLED_TOOLS,
         allowedTools: ENABLED_TOOLS,
         permissionMode: "bypassPermissions",
@@ -180,12 +193,26 @@ export async function runAgent(args: {
             ok = false;
             reason = `agent ended: ${msg.subtype}`;
           }
+          let cacheReadInputTokens = 0;
+          let cacheCreationInputTokens = 0;
+          let inputTokens = 0;
+          let outputTokens = 0;
+          for (const usage of Object.values(msg.modelUsage ?? {})) {
+            cacheReadInputTokens += usage.cacheReadInputTokens ?? 0;
+            cacheCreationInputTokens += usage.cacheCreationInputTokens ?? 0;
+            inputTokens += usage.inputTokens ?? 0;
+            outputTokens += usage.outputTokens ?? 0;
+          }
           await logEvent(task.id, "agent_result", {
             ok,
             costUsd,
             durationMs,
             numTurns,
             subtype: msg.subtype,
+            inputTokens,
+            outputTokens,
+            cacheReadInputTokens,
+            cacheCreationInputTokens,
           });
           break;
         }

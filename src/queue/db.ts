@@ -30,6 +30,7 @@ export type Task = {
   claimedAt: Date | null;
   heartbeatAt: Date | null;
   prUrl: string | null;
+  overviewText: string | null;
   error: string | null;
   attemptCount: number;
   budgetTokensRemaining: number | null;
@@ -52,6 +53,7 @@ type TaskRow = {
   claimed_at: Date | null;
   heartbeat_at: Date | null;
   pr_url: string | null;
+  overview_text: string | null;
   error: string | null;
   attempt_count: number;
   budget_tokens_remaining: string | number | null;
@@ -75,6 +77,7 @@ export function rowToTask(r: TaskRow): Task {
     claimedAt: r.claimed_at,
     heartbeatAt: r.heartbeat_at,
     prUrl: r.pr_url,
+    overviewText: r.overview_text,
     error: r.error,
     attemptCount: r.attempt_count,
     budgetTokensRemaining:

@@ -150,6 +150,35 @@ async function stats(): Promise<void> {
   for (const r of recent.rows) {
     console.log(`  ${r.d}  ${r.n.padStart(4)} tasks  $${Number(r.usd).toFixed(2)}`);
   }
+
+  const cache = await pool.query<{
+    input_tokens: string;
+    cache_read: string;
+    cache_create: string;
+    output_tokens: string;
+  }>(
+    `select coalesce(sum((payload->>'inputTokens')::bigint), 0)::text as input_tokens,
+            coalesce(sum((payload->>'cacheReadInputTokens')::bigint), 0)::text as cache_read,
+            coalesce(sum((payload->>'cacheCreationInputTokens')::bigint), 0)::text as cache_create,
+            coalesce(sum((payload->>'outputTokens')::bigint), 0)::text as output_tokens
+       from task_events
+      where type = 'agent_result'
+        and created_at > now() - interval '7 days'`,
+  );
+  const c = cache.rows[0];
+  if (c) {
+    const fresh = Number(c.input_tokens);
+    const read = Number(c.cache_read);
+    const create = Number(c.cache_create);
+    const out = Number(c.output_tokens);
+    const totalIn = fresh + read + create;
+    const hitRate = totalIn > 0 ? (read / totalIn) * 100 : 0;
+    console.log("\nToken usage (last 7 days):");
+    console.log(`  fresh input    ${fresh.toLocaleString().padStart(14)}`);
+    console.log(`  cache read     ${read.toLocaleString().padStart(14)}  (${hitRate.toFixed(1)}% hit rate)`);
+    console.log(`  cache create   ${create.toLocaleString().padStart(14)}`);
+    console.log(`  output         ${out.toLocaleString().padStart(14)}`);
+  }
 }
 
 try {
