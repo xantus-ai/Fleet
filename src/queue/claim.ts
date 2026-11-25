@@ -51,6 +51,11 @@ export async function enqueue(input: EnqueueInput): Promise<EnqueueResult> {
 /**
  * Atomically claim the next pending task (or recover a stale claim) using
  * SELECT … FOR UPDATE SKIP LOCKED. Returns null if none available.
+ *
+ * A pending task is only claimable when every blocker recorded in
+ * task_dependencies has reached status='done'. Stale-claim recovery
+ * ignores the blocker gate — those tasks already started, so their
+ * blockers were satisfied at claim time.
  */
 export async function claimNext(workerId: string): Promise<Task | null> {
   const { rows } = await pool.query(
@@ -61,11 +66,19 @@ export async function claimNext(workerId: string): Promise<Task | null> {
             heartbeat_at=now(),
             attempt_count=attempt_count+1
       where id = (
-        select id from tasks
-         where status='pending'
-            or (status in ('claimed','running')
-                and heartbeat_at < now() - ($2::int || ' seconds')::interval)
-         order by created_at
+        select t.id from tasks t
+         where (
+                 t.status='pending'
+             and not exists (
+                   select 1 from task_dependencies d
+                     join tasks b on b.id = d.blocker_task_id
+                    where d.task_id = t.id
+                      and b.status <> 'done'
+                 )
+               )
+            or (t.status in ('claimed','running')
+                and t.heartbeat_at < now() - ($2::int || ' seconds')::interval)
+         order by t.created_at
          for update skip locked
          limit 1)
       returning *`,
@@ -101,10 +114,20 @@ export async function markRunning(taskId: string): Promise<void> {
   await logEvent(taskId, "status_change", { to: "running" });
 }
 
-export async function markPrOpen(taskId: string, prUrl: string, branch: string): Promise<void> {
+export async function markPrOpen(
+  taskId: string,
+  prUrl: string,
+  branch: string,
+  overviewText: string | null = null,
+): Promise<void> {
   await pool.query(
-    `update tasks set status='pr_open', pr_url=$2, branch_name=$3 where id=$1`,
-    [taskId, prUrl, branch],
+    `update tasks
+        set status='pr_open',
+            pr_url=$2,
+            branch_name=$3,
+            overview_text=coalesce($4, overview_text)
+      where id=$1`,
+    [taskId, prUrl, branch, overviewText],
   );
   await logEvent(taskId, "status_change", { to: "pr_open", prUrl, branch });
 }

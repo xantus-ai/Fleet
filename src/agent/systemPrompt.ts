@@ -1,5 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { BlockerContext } from "../queue/dependencies.ts";
+
+const BLOCKER_BODY_MAX_CHARS = 4000;
 
 const FLEET_RULES = `
 You are an autonomous developer working as part of a fleet. Each fleet
@@ -79,12 +82,57 @@ export async function buildSystemPrompt(repoCwd: string): Promise<string> {
   return sections.join("\n\n---\n\n");
 }
 
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}\n\n…(truncated; see PR description for full context)`;
+}
+
+function renderBlocker(b: BlockerContext): string {
+  const heading = b.identifier ? `### ${b.identifier}: ${b.title}` : `### ${b.title}`;
+  const lines: string[] = [heading];
+  if (b.prUrl) lines.push(`PR: ${b.prUrl}`);
+  if (b.overviewText?.trim()) {
+    lines.push("", b.overviewText.trim());
+  }
+  if (b.body?.trim()) {
+    lines.push(
+      "",
+      "<details>",
+      "<summary>Original ticket body</summary>",
+      "",
+      truncate(b.body.trim(), BLOCKER_BODY_MAX_CHARS),
+      "",
+      "</details>",
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderBlockersSection(blockers: BlockerContext[]): string {
+  if (blockers.length === 0) return "";
+  const intro =
+    "These tickets are already merged. The current code on `main` reflects\n" +
+    "their decisions — use them to understand the **why**; verify any\n" +
+    "specifics by reading the actual files.";
+  return [
+    "## Related context (already merged)",
+    "",
+    intro,
+    "",
+    blockers.map(renderBlocker).join("\n\n"),
+    "",
+    "---",
+    "",
+  ].join("\n");
+}
+
 export function buildUserPrompt(args: {
   identifier: string | null;
   title: string;
   body: string | null;
   branch: string;
   records: { planPath: string; progressPath: string; overviewPath: string };
+  blockers?: BlockerContext[];
 }): string {
   const heading = args.identifier
     ? `# ${args.identifier}: ${args.title}`
@@ -92,13 +140,14 @@ export function buildUserPrompt(args: {
   const body = args.body?.trim()
     ? args.body.trim()
     : "_(no description provided in ticket)_";
+  const blockersSection = renderBlockersSection(args.blockers ?? []);
   return `${heading}
 
 ${body}
 
 ---
 
-Your branch is \`${args.branch}\`. It is already checked out in the
+${blockersSection}Your branch is \`${args.branch}\`. It is already checked out in the
 working directory. When done, push it with \`git push -u origin ${args.branch}\`.
 
 Audit files (use the Write tool; these live outside the repo and are

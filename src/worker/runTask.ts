@@ -6,6 +6,7 @@ import {
   markRunning,
 } from "../queue/claim.ts";
 import { recordCost } from "../queue/budget.ts";
+import { getBlockerContext } from "../queue/dependencies.ts";
 import { buildDiagnostics } from "../queue/diagnostics.ts";
 import { logEvent, type Task } from "../queue/db.ts";
 import type { LinearAdapter } from "../linear/adapter.ts";
@@ -57,6 +58,14 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
     worktreeDir = wt.dir;
     await logEvent(task.id, "worktree_created", { dir: wt.dir, branch });
 
+    const blockers = await getBlockerContext(task.id);
+    if (blockers.length > 0) {
+      await logEvent(task.id, "blocker_context_loaded", {
+        count: blockers.length,
+        identifiers: blockers.map((b) => b.identifier),
+      });
+    }
+
     const agent = await runAgent({
       task,
       worktreeDir: wt.dir,
@@ -64,6 +73,7 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
       records,
       linear,
       signal: wallclock.signal,
+      blockers,
     });
     await recordCost(task.id, agent.costUsd);
 
@@ -101,7 +111,7 @@ export async function runTask(task: Task, linear: LinearAdapter): Promise<void> 
       prUrl = await createPullRequest({ repo, task, branch, overview });
     }
 
-    await markPrOpen(task.id, prUrl, branch);
+    await markPrOpen(task.id, prUrl, branch, overview);
     await linear.notifyPrOpened({ ...task, branchName: branch }, prUrl);
     await markDone(task.id);
     await linear.notifyDone({ ...task, branchName: branch, prUrl });

@@ -69,8 +69,10 @@ template — that's how "all PRs are annotated" is enforced.
 - **macOS or Linux** (the worker is a long-running local process; this
   hasn't been tested on Windows)
 - **Node 22+** and **pnpm 10+**
-- **PostgreSQL 14+** running locally (or anywhere reachable via
-  `DATABASE_URL`)
+- **PostgreSQL 14+** — easiest via the bundled `docker-compose.yml`
+  (needs Docker / Docker Desktop / OrbStack). A local install works
+  too (`brew install postgresql@14`), as does any Postgres reachable
+  via `DATABASE_URL`.
 - **Git 2.30+** (for `git worktree`)
 - **`gh` CLI** authenticated for the GitHub identity that should own
   the PRs (`gh auth status` should show you're logged in)
@@ -82,28 +84,41 @@ template — that's how "all PRs are annotated" is enforced.
 
 ```bash
 # 1. Install
-git clone <this-repo> fleet && cd fleet
+git clone https://github.com/xantus-ai/Fleet.git fleet && cd fleet
 pnpm install
 
-# 2. Postgres
-brew services start postgresql@14
-createdb fleet
+# 2. Postgres — pick ONE
+#    a) Docker (recommended): isolates the data, no system service.
+docker compose up -d
+#    b) Local install via Homebrew:
+#       brew services start postgresql@14 && createdb fleet
 
 # 3. Configure
 cp .env.example .env
-# fill in DATABASE_URL, LINEAR_WEBHOOK_SECRET, LINEAR_API_KEY,
-# ANTHROPIC_API_KEY, GITHUB_DEFAULT_REPO, REPO_PATH
+# fill in LINEAR_WEBHOOK_SECRET, LINEAR_API_KEY, ANTHROPIC_API_KEY,
+# GITHUB_DEFAULT_REPO, REPO_PATH. The default DATABASE_URL works for
+# both options above.
 
 # 4. Migrate
 pnpm migrate
 
-# 5. Clone the target repo to REPO_PATH
-git clone git@github.com:owner/myrepo.git ~/fleet-repos/myrepo
+# 5. Point REPO_PATH at the target repo. If you don't already have it
+#    cloned locally, clone it now (any path is fine):
+#       git clone git@github.com:owner/myrepo.git ~/fleet-repos/myrepo
+#    If you already have it, just set REPO_PATH to that path. The
+#    fleet creates two siblings next to it: <repo>-worktrees/ and
+#    <repo>-fleet/ — make sure that's an OK place for them.
 
-# 6. Run (two terminals)
+# 6. Run (three terminals)
+ngrok http 8787
 pnpm serve     # webhook receiver on :8787
 pnpm worker    # claims and runs tasks
 ```
+
+The Docker setup binds Postgres to `127.0.0.1:5432` only and stores
+data in a named volume (`fleet-postgres`). To stop it:
+`docker compose down`. To wipe the database too:
+`docker compose down -v`.
 
 For Linear to reach your local receiver, expose port `8787` with a
 tunnel — `cloudflared`, `ngrok`, or whatever you prefer. Set the
@@ -134,10 +149,81 @@ to work on.
 3. **Auto-merge enabled** at the repo level (Settings → General →
    "Allow auto-merge"). Once you approve and checks pass, GitHub merges
    without you clicking a second button.
-4. **Dedicated GitHub identity** (recommended): create a GitHub App or
-   machine user for the fleet, and run `gh auth login` as that user on
-   the worker machine. This gives the fleet a clear identity in
-   `git log` and lets you scope permissions narrowly.
+4. **Dedicated GitHub identity** (recommended): create a GitHub
+   machine user (or App) for the fleet so its commits and PRs are
+   clearly attributable. The setup below lets the bot and your
+   personal account coexist on the same machine — the worker process
+   uses the bot, your manual terminals keep using you.
+
+   **a. Create the bot account** at github.com (different email — a
+   `you+fleet@gmail.com` alias works), enable 2FA, and add a small
+   avatar so it's visually distinct.
+
+   **b. Invite the bot to the target repo** as a **Write**
+   collaborator (Settings → Collaborators → Add people). Accept the
+   invite from the bot account.
+
+   **c. Generate a Personal Access Token.** Type matters:
+
+   - **If the target repo is owned by a personal account** and the
+     bot is a collaborator, use a **classic PAT** with the `repo`
+     scope (or `public_repo` for public repos). Fine-grained PATs
+     only grant access to repos the *resource owner* owns — a
+     collaborator can't generate a fine-grained PAT for someone
+     else's personal repo.
+   - **If the target lives in a GitHub Organization**, prefer a
+     **fine-grained PAT**: scope `Repository access` to just that
+     repo, grant `Contents: read/write` and
+     `Pull requests: read/write`, and leave `Workflows` off so the
+     bot can never modify CI.
+
+   **d. Wire the token to the *worker process only*.** Put it in
+   your fleet `.env` as `GH_TOKEN=ghp_...`. The worker loads `.env`
+   via dotenv and inherits it into every `git` and `gh` subprocess —
+   `git push` (via `gh`'s credential helper) and `gh pr create` both
+   pick it up. Your manual terminals don't load `.env`, so they
+   continue to use whichever account `gh auth` has active. Keep your
+   personal account active globally:
+
+   ```bash
+   gh auth login                  # log in as the bot too (kept stored)
+   gh auth switch -u <you>        # but make personal the active one
+   gh auth status                 # confirm both listed, you're active
+   ```
+
+   **e. Bot identity in agent commits.** Set `BOT_GIT_NAME` and
+   `BOT_GIT_EMAIL` in `.env`. The worktree manager applies these
+   per-worktree on creation, so every agent commit shows up under the
+   bot's name and email in `git log` — making it easy to filter and
+   monitor bot activity:
+
+   ```
+   BOT_GIT_NAME=Fleet Bot
+   BOT_GIT_EMAIL=123456+smith-909@users.noreply.github.com
+   ```
+
+   Use the bot's GitHub noreply address (Settings → Emails on the bot
+   account, after toggling "Keep my email addresses private"). That
+   way commits link to the bot's profile and the bot's real email
+   never lands in git history. Per-worktree config beats per-repo and
+   global, so your manual commits in the cloud main checkout still
+   show your personal identity. The worktree manager also disables
+   commit signing inside the worktree so the agent doesn't try to
+   sign with a key it doesn't have.
+
+   **f. Verify the split:**
+
+   ```bash
+   # Personal terminal
+   gh api user -q .login                         # → your username
+
+   # What the worker sees
+   GH_TOKEN=ghp_<bot-pat> gh api user -q .login  # → bot's username
+   ```
+
+   After a fleet run, `git log <branch>` in the worktree should show
+   the bot as the commit author. `git log --author='Fleet Bot'` is a
+   cheap way to filter for bot work across the repo.
 5. **Local clone** at `REPO_PATH` (e.g. `~/fleet-repos/myrepo`).
    The fleet creates two sibling directories next to it:
    - `~/fleet-repos/myrepo-worktrees/<task-id>/` — per-task git
@@ -152,18 +238,60 @@ to work on.
 
 1. **Create a label** named `agent-ready` (or whatever you set
    `LINEAR_TRIGGER_LABEL` to) in your workspace.
-2. **Webhook** (Settings → API → Webhooks):
-   - URL: `https://<tunnel>/linear/webhook`
-   - Resources: enable **Issues**
-   - Copy the **signing secret** into `LINEAR_WEBHOOK_SECRET`
-3. **API key** (Settings → API → Personal API keys): create one and
-   put it in `LINEAR_API_KEY`. The fleet uses it to comment back on
-   tickets via GraphQL `commentCreate`.
+
+2. **Webhook** (Settings → API → Webhooks → New webhook):
+   - **URL:** `https://<tunnel>/linear/webhook`
+   - **Resource types / Data change events:** enable **Issues**
+     **only**. Leave the rest off — the fleet ignores them
+     (`src/webhook/server.ts` filters `payload.type === "Issue"` and
+     `payload.action` ∈ `create | update`). Subscribing to extra
+     resources just generates ignored deliveries you'll have to
+     scroll past in the Deliveries tab.
+   - **Team scope:** workspace-scoped or team-scoped both work — the
+     fleet routes off the `agent-ready` label, not the team. Pick
+     team-scoped if you want a smaller blast radius (only that team's
+     issues can trigger runs); pick workspace-scoped if you want one
+     webhook to cover everywhere.
+   - Copy the **signing secret** into `LINEAR_WEBHOOK_SECRET`.
+
+3. **API key** (Settings → API → Personal API keys → Create API key):
+   - **Key name:** anything (e.g. `Fleet`).
+   - **Permissions → Only select permissions:** check
+     **Create comments** *only*. Leave Read, Write, Create issues,
+     and Admin off. The fleet's single Linear write operation is the
+     `commentCreate` GraphQL mutation
+     (`src/linear/webhookAdapter.ts:13`); it never reads, lists, or
+     edits issues. (If you hit a permission error on first run,
+     adding **Read** is the obvious fallback — but you shouldn't
+     need it.)
+   - **Team access → Only select teams:** pick the team(s) whose
+     issues you'll label `agent-ready`. Don't pick "All teams you
+     have access to" unless you actually want the fleet reachable
+     from every team — minimum-privilege keeps blast radius small.
+   - Copy the generated key into `LINEAR_API_KEY` in `.env`.
+   - **Identity:** comments are attributed to the user who created
+     the key. If you'd rather the fleet post as a dedicated bot
+     identity, create a Linear service user, add it to the relevant
+     teams, and generate the key from that account instead.
+   - **Dry-run mode:** if you leave `LINEAR_API_KEY` empty, the
+     adapter logs comments to stdout instead of posting them
+     (`src/linear/webhookAdapter.ts:47`). Useful for first-run
+     testing without hitting Linear.
 
 To kick off a run, file a ticket and add the `agent-ready` label. The
 fleet only triggers on `Issue` `create`/`update` events that include
 the label, so you can edit a ticket freely without re-triggering, as
 long as you don't toggle the label off and back on.
+
+**Labelling a chain of dependent tickets:** if the labelled ticket has
+Linear `blocks` / `blocked-by` relations, the receiver walks the
+connected component and enqueues every reachable ticket in one shot.
+Each dependent task only becomes claimable once every one of its
+recorded blockers has reached `done` (PR merged + closed by the fleet
+orchestrator). So you can label only the highest-order ticket and let
+the chain drain in order, instead of hand-labelling each one as the
+previous PR merges. Requires `LINEAR_API_KEY` to be set; without it
+the chain walk is skipped and only the labelled ticket is enqueued.
 
 ## Running it
 
@@ -237,9 +365,14 @@ authoritative list; this table summarizes the load-bearing ones.
 | `LINEAR_WEBHOOK_SECRET` | — | HMAC signing secret. **Required** unless `FLEET_ALLOW_UNSIGNED_WEBHOOKS=1` |
 | `LINEAR_API_KEY` | — | Posts comments back via GraphQL. If unset, comments are logged to stdout instead (dry-run mode) |
 | `LINEAR_TRIGGER_LABEL` | `agent-ready` | Only issues with this label trigger a run |
+| `LINEAR_STATE_IN_PROGRESS` | `In Progress` | Workflow state set on the issue when the worker picks it up. Matched case-insensitively against the issue's team states; empty disables. Requires `LINEAR_API_KEY` |
+| `LINEAR_STATE_IN_REVIEW` | `In Review` | Workflow state set on the issue once the PR is opened. Same matching rules; empty disables |
 | `GITHUB_DEFAULT_REPO` | — | `owner/name` — required for v1 single-repo setup |
 | `REPO_PATH` | — | Absolute path to the local clone of the target repo |
 | `DEFAULT_BRANCH` | `main` | Branch to base PRs against |
+| `BOT_GIT_NAME` | — | Git author name applied per-worktree. When set with `BOT_GIT_EMAIL`, agent commits are attributed to the bot; the operator's normal identity continues to apply outside worktrees |
+| `BOT_GIT_EMAIL` | — | Git author email applied per-worktree (paired with `BOT_GIT_NAME`). Use the bot's `…@users.noreply.github.com` so commits link to the bot's GitHub profile |
+| `GH_TOKEN` | — | Bot's classic PAT. The worker loads `.env`, so its `git push` / `gh pr create` subprocesses use this; manual terminals don't load `.env` and keep using whichever account `gh auth` has active |
 | `ANTHROPIC_API_KEY` | — | Required by the Claude Agent SDK |
 | `AGENT_MODEL` | `claude-sonnet-4-6` | Model the agent uses |
 | `AGENT_MAX_TURNS` | `80` | Hard cap on conversation turns per task |
@@ -249,6 +382,7 @@ authoritative list; this table summarizes the load-bearing ones.
 | `TASK_TOKEN_BUDGET` | `2000000` | Per-task token budget (informational) |
 | `TASK_WALLCLOCK_SECONDS` | `1800` | Per-task wallclock cap, enforced via `AbortController` |
 | `FLEET_DAILY_USD_CAP` | `50` | Rolling 24h spend cap across the entire fleet. `0` disables |
+| `WORKER_SHARE_NODE_MODULES` | `1` | CoW-clone `node_modules` from the source repo into each fresh worktree (APFS clonefile / Linux reflink). Saves ~5 turns and 30-60s per task. `0` disables |
 | `FLEET_ALLOW_UNSIGNED_WEBHOOKS` | `0` | Set to `1` to skip signature checks (local dev only) |
 
 ## Safety model

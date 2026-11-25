@@ -16,6 +16,7 @@ const baseTask: Task = {
   claimedAt: null,
   heartbeatAt: null,
   prUrl: null,
+  overviewText: null,
   error: null,
   attemptCount: 1,
   budgetTokensRemaining: null,
